@@ -1,0 +1,24 @@
+name: Wallet Tracker
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run wallet tracker
+        env:
+          WALLET_ADDRESS: ${{ secrets.WALLET_ADDRESS }}
+          EMAIL_USER:     ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS:     ${{ secrets.EMAIL_PASS }}
+          NOTIFY_EMAIL:   ${{ secrets.NOTIFY_EMAIL }}
+          DEBANK_API_KEY: ${{ secrets.DEBANK_API_KEY }}
+        run: python wallet_tracker.py
