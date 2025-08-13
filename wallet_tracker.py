@@ -10,6 +10,7 @@ import re
 import os
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 # Import webdriver_manager
 from webdriver_manager.chrome import ChromeDriverManager
@@ -55,8 +56,8 @@ def scrape_debank_wallet_real(wallet_address):
 
     # Use webdriver-manager to handle the driver
     driver = webdriver.Chrome(
-            executable_path=ChromeDriverManager().install(),
-            options=options
+                service = Service(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=service, options=options)
         )
     driver.set_page_load_timeout(30)
 
