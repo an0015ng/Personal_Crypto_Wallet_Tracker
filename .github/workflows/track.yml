@@ -12,13 +12,24 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
-      - name: Install dependencies
+      
+      # Add this step to install Google Chrome
+      - name: Install Google Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Install Python dependencies
         run: pip install -r requirements.txt
+        
       - name: Run wallet tracker
         env:
+          # secret
           WALLET_ADDRESS: ${{ secrets.WALLET_ADDRESS }}
-          EMAIL_USER:     ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS:     ${{ secrets.EMAIL_PASS }}
-          NOTIFY_EMAIL:   ${{ secrets.NOTIFY_EMAIL }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
           DEBANK_API_KEY: ${{ secrets.DEBANK_API_KEY }}
         run: python wallet_tracker.py
