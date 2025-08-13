@@ -57,7 +57,7 @@ def scrape_debank_wallet_real(wallet_address):
     # Use webdriver-manager to handle the driver
     driver = webdriver.Chrome(
                 service = Service(ChromeDriverManager().install()),
-                driver = webdriver.Chrome(service=service, options=options)
+                driver = webdriver.Chrome(service=Service, options=Options)
         )
     driver.set_page_load_timeout(30)
 
