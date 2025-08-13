@@ -54,7 +54,10 @@ def scrape_debank_wallet_real(wallet_address):
     options.add_argument("--window-size=1920,1080")
 
     # Use webdriver-manager to handle the driver
-    driver = webdriver.Chrome(ChromeDriverManager().install(), options=options)
+    driver = webdriver.Chrome(
+            executable_path=ChromeDriverManager().install(),
+            options=options
+        )
     driver.set_page_load_timeout(30)
 
     try:
