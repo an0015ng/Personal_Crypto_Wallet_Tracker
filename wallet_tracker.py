@@ -55,15 +55,12 @@ def scrape_debank_wallet_real(wallet_address):
     import time, hashlib, re
     from datetime import datetime
 
-    # Headless Chrome setup
+    # Chrome headless options
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.add_argument("--disable-extensions")
-    options.add_argument("--disable-web-security")
-    options.add_argument("--allow-running-insecure-content")
     options.add_argument("--window-size=1920,1080")
     options.add_argument(
         "--user-agent=Mozilla/5.0 (Linux; Android 10; K) "
@@ -73,7 +70,7 @@ def scrape_debank_wallet_real(wallet_address):
 
     driver = None
     try:
-        # Initialize Chrome driver with Service
+        # Initialize ChromeDriver via webdriver_manager
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(60)
@@ -82,9 +79,9 @@ def scrape_debank_wallet_real(wallet_address):
         # --- SCRAPE PORTFOLIO HOLDINGS ---
         print(f"Loading portfolio page for {wallet_address}")
         driver.get(f"https://debank.com/profile/{wallet_address}")
-        time.sleep(8)  # Increased wait time
+        time.sleep(8)
 
-        # Try multiple selectors for holdings table
+        # Selectors to try for holdings rows
         holdings_selectors = [
             "div.db-table.TokenWallet_table__bmN1O div.db-table-body.is-noEndBorder > div",
             "[class*='TokenWallet_table'] [class*='db-table-body'] > div",
@@ -93,14 +90,14 @@ def scrape_debank_wallet_real(wallet_address):
         ]
 
         rows = []
-        for selector in holdings_selectors:
+        for sel in holdings_selectors:
             try:
-                rows = driver.find_elements(By.CSS_SELECTOR, selector)
+                rows = driver.find_elements(By.CSS_SELECTOR, sel)
                 if rows:
-                    print(f"Found {len(rows)} holding rows with selector: {selector}")
+                    print(f"Found {len(rows)} holding rows with selector: {sel}")
                     break
             except Exception as e:
-                print(f"Selector {selector} failed: {e}")
+                print(f"Selector {sel} failed: {e}")
                 continue
 
         holdings = []
@@ -108,47 +105,33 @@ def scrape_debank_wallet_real(wallet_address):
 
         for i, row in enumerate(rows):
             try:
-                # Try multiple approaches to extract token data
-                token_selectors = [
-                    "div > div:nth-child(1) a",
-                    "[class*='token'] a",
-                    "a[href*='/token/']",
-                    "div:first-child a"
-                ]
-
+                # Extract token symbol
                 token = None
-                for sel in token_selectors:
+                for tok_sel in ["div > div:nth-child(1) a", "[class*='token'] a", "a[href*='/token/']"]:
                     try:
-                        token_elem = row.find_element(By.CSS_SELECTOR, sel)
-                        token = token_elem.text.strip()
+                        elem = row.find_element(By.CSS_SELECTOR, tok_sel)
+                        token = elem.text.strip()
                         if token:
                             break
                     except:
                         continue
-
                 if not token:
                     continue
 
-                # Extract price, amount, value with fallbacks
+                # Parse cells: price in cell[1], amount in cell[2], value in cell[3]
                 cells = row.find_elements(By.CSS_SELECTOR, "div")
                 if len(cells) < 4:
                     continue
 
-                try:
-                    price_text = cells[1].text.strip()
-                    price = float(price_text.replace('$', '').replace(',', ''))
-                except:
-                    price = 0.0
+                price_text = cells[1].text.strip()
+                price = float(price_text.replace("$", "").replace(",", "")) if price_text else 0.0
 
-                try:
-                    amount_text = cells[1].text.strip()
-                    amount = float(amount_text.replace(',', ''))
-                except:
-                    amount = 0.0
+                amount_text = cells[2].text.strip()
+                amount = float(amount_text.replace(",", "")) if amount_text else 0.0
 
+                value_text = cells[3].text.strip()
                 try:
-                    value_text = cells[2].text.strip()
-                    value_usd = float(value_text.replace('$', '').replace(',', ''))
+                    value_usd = float(value_text.replace("$", "").replace(",", ""))
                 except:
                     value_usd = price * amount if price and amount else 0.0
 
@@ -173,12 +156,12 @@ def scrape_debank_wallet_real(wallet_address):
                 print(f"Error parsing holding row {i}: {e}")
                 continue
 
-        # Consolidate holdings across chains
+        # Consolidate multi-chain holdings
         consolidated = {}
         for h in holdings:
             t = h["token"]
             if t in consolidated:
-                consolidated[t]["amount"] += h["amount"]
+                consolidated[t]["amount"]    += h["amount"]
                 consolidated[t]["value_usd"] += h["value_usd"]
             else:
                 consolidated[t] = h.copy()
@@ -191,20 +174,20 @@ def scrape_debank_wallet_real(wallet_address):
 
         tx_selectors = [
             "div.db-table-body > div",
-            "[class*='history'] [class*='table'] [class*='body'] > div",
+            "[class*='history'] [class*='body'] > div",
             "[class*='transaction'] div[class*='row']",
             "div[class*='list'] > div[class*='item']"
         ]
 
         tx_rows = []
-        for selector in tx_selectors:
+        for sel in tx_selectors:
             try:
-                tx_rows = driver.find_elements(By.CSS_SELECTOR, selector)
+                tx_rows = driver.find_elements(By.CSS_SELECTOR, sel)
                 if tx_rows:
-                    print(f"Found {len(tx_rows)} transaction rows with selector: {selector}")
+                    print(f"Found {len(tx_rows)} transaction rows with selector: {sel}")
                     break
             except Exception as e:
-                print(f"Transaction selector {selector} failed: {e}")
+                print(f"Transaction selector {sel} failed: {e}")
                 continue
 
         transactions = []
@@ -215,23 +198,21 @@ def scrape_debank_wallet_real(wallet_address):
                     continue
 
                 hsh = hashlib.md5(f"{text}{i}".encode()).hexdigest()
-
                 cells = row.find_elements(By.CSS_SELECTOR, "div")
-                if len(cells) < 2:
+                if len(cells) < 3:
                     continue
 
                 tx_type = cells[0].text.strip()
-
-                amount_text = cells[3].text.strip()
-                token_match = re.search(r'\b([A-Z]{2,10})\b', amount_text)
-                symbol = token_match.group(1) if token_match else ""
+                amount_text = cells[1].text.strip()
+                token_match = re.search(r"\b[A-Z0-9]{2,10}\b", amount_text)
+                symbol = token_match.group(0) if token_match else ""
 
                 value_usd = 0.0
                 for cell in cells:
                     ct = cell.text.strip()
-                    if '$' in ct:
+                    if "$" in ct:
                         try:
-                            value_usd = float(ct.replace('$', '').replace(',', ''))
+                            value_usd = float(ct.replace("$", "").replace(",", ""))
                             break
                         except:
                             continue
@@ -240,14 +221,14 @@ def scrape_debank_wallet_real(wallet_address):
                     continue
 
                 transactions.append({
-                    "hash": f"0x{hsh}",
-                    "type": tx_type,
-                    "amount": amount_text,
-                    "token": symbol,
+                    "hash":      f"0x{hsh}",
+                    "type":      tx_type,
+                    "amount":    amount_text,
+                    "token":     symbol,
                     "value_usd": value_usd,
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "from": wallet_address,
-                    "to": "unknown"
+                    "from":      wallet_address,
+                    "to":        "unknown"
                 })
                 print(f"Added transaction: {tx_type} = ${value_usd:,.2f}")
 
@@ -268,8 +249,6 @@ def scrape_debank_wallet_real(wallet_address):
                 driver.quit()
             except:
                 pass
-
-
 
 def send_email_notification(new_transactions, current_holdings):
     """Send email notification with new transactions and top holdings."""
