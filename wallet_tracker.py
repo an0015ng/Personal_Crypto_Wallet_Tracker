@@ -81,7 +81,7 @@ def scrape_debank_wallet_real(wallet_address):
         driver.get(f"https://debank.com/profile/{wallet_address}")
         time.sleep(8)
 
-        # Selectors to try for holdings rows
+        # Try multiple selectors for holdings rows
         holdings_selectors = [
             "div.db-table.TokenWallet_table__bmN1O div.db-table-body.is-noEndBorder > div",
             "[class*='TokenWallet_table'] [class*='db-table-body'] > div",
@@ -118,18 +118,27 @@ def scrape_debank_wallet_real(wallet_address):
                 if not token:
                     continue
 
-                # Parse cells: price in cell[1], amount in cell[2], value in cell[3]
+                # Parse cells with correct indices
                 cells = row.find_elements(By.CSS_SELECTOR, "div")
+                print(f"DEBUG row {i} cells:", [c.text for c in cells])  # debug
+
                 if len(cells) < 4:
                     continue
 
-                price_text = cells[1].text.strip()
-                price = float(price_text.replace("$", "").replace(",", "")) if price_text else 0.0
-
+                price_text  = cells[1].text.strip()
                 amount_text = cells[2].text.strip()
-                amount = float(amount_text.replace(",", "")) if amount_text else 0.0
+                value_text  = cells[3].text.strip()
 
-                value_text = cells[3].text.strip()
+                try:
+                    price = float(price_text.replace("$", "").replace(",", ""))
+                except:
+                    price = 0.0
+
+                try:
+                    amount = float(amount_text.replace(",", ""))
+                except:
+                    amount = 0.0
+
                 try:
                     value_usd = float(value_text.replace("$", "").replace(",", ""))
                 except:
@@ -202,10 +211,10 @@ def scrape_debank_wallet_real(wallet_address):
                 if len(cells) < 3:
                     continue
 
-                tx_type = cells[0].text.strip()
+                tx_type     = cells[0].text.strip()
                 amount_text = cells[1].text.strip()
                 token_match = re.search(r"\b[A-Z0-9]{2,10}\b", amount_text)
-                symbol = token_match.group(0) if token_match else ""
+                symbol      = token_match.group(0) if token_match else ""
 
                 value_usd = 0.0
                 for cell in cells:
