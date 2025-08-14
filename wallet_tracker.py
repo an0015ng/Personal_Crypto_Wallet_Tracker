@@ -1,140 +1,3 @@
-# Shared: imports at top of file
-import os, time, json, hashlib, re
-from datetime import datetime
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-
-# Shared: load secrets/env
-WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
-SMTP_SERVER    = os.getenv("SMTP_SERVER")
-SMTP_PORT      = int(os.getenv("SMTP_PORT", 587))
-EMAIL_USER     = os.getenv("EMAIL_USER")
-EMAIL_PASS     = os.getenv("EMAIL_PASS")
-NOTIFY_EMAIL   = os.getenv("NOTIFY_EMAIL")
-
-SEEN_FILE = "seen_transactions.json"
-
-def load_seen_transactions():
-    try:
-        return set(json.load(open(SEEN_FILE)))
-    except:
-        return set()
-
-def save_seen_transactions(seen):
-    json.dump(list(seen), open(SEEN_FILE, "w"))
-
-def scrape_debank_wallet_real(wallet):
-    """Unified scraper for portfolio + history."""
-    opts = Options()
-    for arg in ["--headless=new","--no-sandbox","--disable-dev-shm-usage","--disable-gpu"]:
-        opts.add_argument(arg)
-    opts.add_argument("--window-size=1920,1080")
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=opts)
-    driver.implicitly_wait(10)
-
-    # PORTFOLIO
-    driver.get(f"https://debank.com/profile/{wallet}")
-    time.sleep(5)
-    holdings = []; seen = set()
-    sel_hold = "div.db-table.TokenWallet_table__bmN1O div.db-table-body > div"
-    for row in driver.find_elements(By.CSS_SELECTOR, sel_hold):
-        try:
-            t = row.find_element(By.CSS_SELECTOR, "div:nth-child(1) a").text.strip()
-            price = float(row.find_element(By.CSS_SELECTOR, "div:nth-child(2)").text.strip().replace("$","").replace(",","") or 0)
-            amt   = float(row.find_element(By.CSS_SELECTOR, "div:nth-child(3)").text.strip().replace(",","") or 0)
-            val   = float(row.find_element(By.CSS_SELECTOR, "div:nth-child(4)").text.strip().replace("$","").replace(",","") or amt*price)
-            if t and val>0 and (key:=f"{t}-{val}") not in seen:
-                seen.add(key)
-                holdings.append({"token":t,"price":price,"amount":amt,"value_usd":val,"chains":["ethereum"]})
-        except:
-            pass
-
-    # TRANSACTIONS
-    driver.get(f"https://debank.com/profile/{wallet}/history")
-    time.sleep(5)
-    txs = []; seen_tx = set()
-    sel_tx = "div.db-table-body > div"
-    for i, row in enumerate(driver.find_elements(By.CSS_SELECTOR, sel_tx)[:25]):
-        try:
-            txt = row.text.strip()
-            hsh = "0x"+hashlib.md5(f"{txt}{i}".encode()).hexdigest()
-            cells = row.find_elements(By.CSS_SELECTOR,"div")
-            val = float(cells[2].text.strip().replace("$","").replace(",","") or 0)
-            sym = re.search(r"\b[A-Z0-9]{2,10}\b", cells[1].text)
-            if txt and val>0 and hsh not in seen_tx:
-                seen_tx.add(hsh)
-                txs.append({
-                    "hash":hsh,
-                    "type":cells.text.strip(),
-                    "amount":cells[1].text.strip(),
-                    "token":sym.group(0) if sym else "",
-                    "value_usd":val,
-                    "timestamp":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "from":wallet,"to":"unknown"
-                })
-        except:
-            pass
-
-    driver.quit()
-    return txs, holdings
-
-def send_email_notification(new_txs, holdings):
-    """Unified, rich HTML email body."""
-    sig = [tx for tx in new_txs if tx["value_usd"]>10000]
-    top = sorted(holdings, key=lambda h:h["value_usd"], reverse=True)[:10]
-    total = sum(h["value_usd"] for h in holdings) or 0
-
-    msg = MIMEMultipart()
-    msg["From"]=EMAIL_USER; msg["To"]=NOTIFY_EMAIL
-    msg["Subject"]=f"DeBank Update: {len(sig)} New TXs + Top Holdings"
-
-    body = f"""
-    <html><body style="font-family:Arial">
-      <h2>📬 DeBank Wallet Update</h2>
-      <p><strong>Wallet:</strong> {WALLET_ADDRESS}</p>
-      <p><strong>Time:</strong> {datetime.now():%Y-%m-%d %H:%M:%S}</p>
-      <h3>🚨 Significant New Transactions (>$10k)</h3>
-      {"".join(f"<li><strong>{tx['type']}</strong>: {tx['amount']} {tx['token']} (${tx['value_usd']:,.2f})</li>" for tx in sig) or "<p>No new tx over $10k.</p>"}
-      <h2>Total Portfolio Value: ${total:,.2f}</h2>
-      <h3>💰 Top 10 Holdings</h3>
-      <table border="1" cellpadding="5" style="border-collapse:collapse;width:100%">
-        <tr><th>Rank</th><th>Token</th><th>Amount</th><th>Value</th><th>%</th></tr>
-        {"".join(f"<tr><td>{i+1}</td><td>{h['token']}</td><td align='right'>{h['amount']:,}</td><td align='right'>${h['value_usd']:,.2f}</td><td align='right'>{h['value_usd']/total*100 if total else 0:.2f}%</td></tr>" for i,h in enumerate(top))}
-      </table>
-    </body></html>"""
-
-    msg.attach(MIMEText(body,"html"))
-    with smtplib.SMTP(SMTP_SERVER,SMTP_PORT) as s:
-        s.starttls()
-        s.login(EMAIL_USER,EMAIL_PASS)
-        s.send_message(msg)
-
-def track_wallet():
-    seen = load_seen_transactions()
-    txs, holds = scrape_debank_wallet_real(WALLET_ADDRESS)
-    if txs is None:
-        return
-    new = [tx for tx in txs if tx["hash"] not in seen]
-    for tx in new: seen.add(tx["hash"])
-    send_email_notification(new, holds)
-    save_seen_transactions(seen)
-
-if __name__=="__main__":
-    track_wallet()
-
-
-
-
-
-
-"""
 import requests
 from bs4 import BeautifulSoup
 import smtplib
@@ -184,14 +47,15 @@ def scrape_debank_wallet_real(wallet_address):
     Selenium scraper for DeBank portfolio & history tables.
     Returns (transactions, holdings) or (None, None) on failure.
     """
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.common.by import By
     from webdriver_manager.chrome import ChromeDriverManager
-    import time
-    import hashlib
-    import re
+    import time, hashlib, re
     from datetime import datetime
-    
-    # Chrome options setup
+
+    # Headless Chrome setup
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -201,7 +65,11 @@ def scrape_debank_wallet_real(wallet_address):
     options.add_argument("--disable-web-security")
     options.add_argument("--allow-running-insecure-content")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("--user-agent=Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Linux; Android 10; K) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/114.0.0.0 Mobile Safari/537.36"
+    )
 
     driver = None
     try:
@@ -223,7 +91,7 @@ def scrape_debank_wallet_real(wallet_address):
             "[class*='table'] [class*='body'] > div[class*='row']",
             "div[class*='portfolio'] div[class*='row']"
         ]
-        
+
         rows = []
         for selector in holdings_selectors:
             try:
@@ -247,7 +115,7 @@ def scrape_debank_wallet_real(wallet_address):
                     "a[href*='/token/']",
                     "div:first-child a"
                 ]
-                
+
                 token = None
                 for sel in token_selectors:
                     try:
@@ -257,7 +125,7 @@ def scrape_debank_wallet_real(wallet_address):
                             break
                     except:
                         continue
-                
+
                 if not token:
                     continue
 
@@ -267,29 +135,22 @@ def scrape_debank_wallet_real(wallet_address):
                     continue
 
                 try:
-                    # Try to parse price from second cell
                     price_text = cells[1].text.strip()
-                    price = 0.0
-                    if price_text and '$' in price_text:
-                        price = float(price_text.replace('$', '').replace(',', ''))
+                    price = float(price_text.replace('$', '').replace(',', ''))
                 except:
                     price = 0.0
 
                 try:
-                    # Try to parse amount from third cell
-                    amount_text = cells[2].text.strip()
-                    amount = float(amount_text.replace(',', '')) if amount_text else 0.0
+                    amount_text = cells[1].text.strip()
+                    amount = float(amount_text.replace(',', ''))
                 except:
                     amount = 0.0
 
                 try:
-                    # Try to parse USD value from fourth cell
-                    value_text = cells[3].text.strip()
-                    value_usd = 0.0
-                    if value_text and '$' in value_text:
-                        value_usd = float(value_text.replace('$', '').replace(',', ''))
+                    value_text = cells[2].text.strip()
+                    value_usd = float(value_text.replace('$', '').replace(',', ''))
                 except:
-                    value_usd = price * amount if price > 0 and amount > 0 else 0.0
+                    value_usd = price * amount if price and amount else 0.0
 
                 if value_usd <= 0:
                     continue
@@ -328,14 +189,13 @@ def scrape_debank_wallet_real(wallet_address):
         driver.get(f"https://debank.com/profile/{wallet_address}/history")
         time.sleep(8)
 
-        # Try multiple selectors for transaction table
         tx_selectors = [
             "div.db-table-body > div",
             "[class*='history'] [class*='table'] [class*='body'] > div",
             "[class*='transaction'] div[class*='row']",
             "div[class*='list'] > div[class*='item']"
         ]
-        
+
         tx_rows = []
         for selector in tx_selectors:
             try:
@@ -354,29 +214,24 @@ def scrape_debank_wallet_real(wallet_address):
                 if not text:
                     continue
 
-                # Generate hash for transaction
                 hsh = hashlib.md5(f"{text}{i}".encode()).hexdigest()
 
-                # Try to extract transaction details
                 cells = row.find_elements(By.CSS_SELECTOR, "div")
                 if len(cells) < 2:
                     continue
 
-                # Parse transaction type
-                tx_type = cells[0].text.strip() if cells else "Unknown"
+                tx_type = cells[0].text.strip()
 
-                # Parse amount and token
-                amount_text = cells[1].text.strip() if len(cells) > 1 else ""
+                amount_text = cells[3].text.strip()
                 token_match = re.search(r'\b([A-Z]{2,10})\b', amount_text)
                 symbol = token_match.group(1) if token_match else ""
 
-                # Parse USD value
                 value_usd = 0.0
                 for cell in cells:
-                    cell_text = cell.text.strip()
-                    if '$' in cell_text:
+                    ct = cell.text.strip()
+                    if '$' in ct:
                         try:
-                            value_usd = float(cell_text.replace('$', '').replace(',', ''))
+                            value_usd = float(ct.replace('$', '').replace(',', ''))
                             break
                         except:
                             continue
@@ -396,7 +251,7 @@ def scrape_debank_wallet_real(wallet_address):
                 })
                 print(f"Added transaction: {tx_type} = ${value_usd:,.2f}")
 
-            except Exception as e:now
+            except Exception as e:
                 print(f"Error parsing transaction row {i}: {e}")
                 continue
 
@@ -413,6 +268,7 @@ def scrape_debank_wallet_real(wallet_address):
                 driver.quit()
             except:
                 pass
+
 
 
 def send_email_notification(new_transactions, current_holdings):
@@ -483,7 +339,7 @@ def track_wallet():
     send_email_notification(new_transactions, holdings)
     save_seen_transactions(seen_transactions)
     print("💾 Saved transaction history.")
-"""
+
 
 if __name__ == "__main__":
     track_wallet()
