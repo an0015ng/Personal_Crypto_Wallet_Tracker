@@ -103,61 +103,76 @@ def scrape_debank_wallet_real(wallet_address):
                 cons[t]=h.copy()
         final_holdings=list(cons.values())
 
-        # --- SCRAPE TRANSACTIONS with exact selectors ---
+        # --- SCRAPE TRANSACTION HISTORY ---
+        print(f"Loading transaction history for {wallet_address}")
         driver.get(f"https://debank.com/profile/{wallet_address}/history")
         time.sleep(8)
-        tx_entries = driver.find_elements(
+
+        # Use the same direct-child approach for transactions
+        tx_body = driver.find_element(
             By.CSS_SELECTOR,
-            "div.History_table__uvlpK > div"  # direct children of the history table
+            "div.db-table.Body_history__bmN1O div.db-table-body"
         )
-        transactions, seen_tx = [], set()
-        for entry in tx_entries[:25]:
-            # time ago
-            time_txt = entry.find_element(
-                By.CSS_SELECTOR,
-                "div.History_txStatus__xTTe9 div.History_sinceTime__yW4eC"
-            ).text.strip()
+        tx_rows = tx_body.find_elements(By.XPATH, "./div")
 
-            # each token change block
-            for change in entry.find_elements(
-                By.CSS_SELECTOR,
-                "div.dbChangeTokenList > div > div > div.ChangeTokenList_tokenWithAmount__hUd7a.ChangeTokenList_income__rF-cL.ChangeTokenList_clickable__yJC\\+x"
-            ):
-                name = change.find_element(
+        transactions = []
+        seen_tx = set()
+
+        for i, row in enumerate(tx_rows[:25]):
+            try:
+                # Extract the “time ago”
+                time_ago = row.find_element(
                     By.CSS_SELECTOR,
-                    "div.ChangeTokenList_tokenTitle__ZLDAR span.ChangeTokenList_tokenName__X1QXR"
+                    "div.History_txStatus__xTTe9 div.History_sinceTime__yW4eC"
                 ).text.strip()
-                usd = change.find_element(
+
+                # Find each token change element
+                changes = row.find_elements(
                     By.CSS_SELECTOR,
-                    "div.ChangeTokenList_tokenTitle__ZLDAR span.ChangeTokenList_tokenPrice__uGc-M"
-                ).text.strip()  # like "$600,000.00"
+                    "div.dbChangeTokenList > div > div > div.ChangeTokenList_income__rF-cL"
+                )
+                for change in changes:
+                    token_name = change.find_element(
+                        By.CSS_SELECTOR,
+                        "div.ChangeTokenList_tokenTitle__ZLDAR span.ChangeTokenList_tokenName__X1QXR"
+                    ).text.strip()
+                    usd_text = change.find_element(
+                        By.CSS_SELECTOR,
+                        "div.ChangeTokenList_tokenTitle__ZLDAR span.ChangeTokenList_tokenPrice__uGc-M"
+                    ).text.strip()
 
-                try:
-                    value_usd = float(usd.replace("$","").replace(",",""))
-                except:
-                    continue
-                if value_usd <= 10000:
-                    continue
+                    # Parse USD value
+                    try:
+                        value_usd = float(usd_text.replace("$", "").replace(",", ""))
+                    except:
+                        continue
+                    if value_usd <= 10000:
+                        continue
 
-                # dedupe by hash of time+name+value
-                hsh = hashlib.md5(f"{time_txt}{name}{value_usd}".encode()).hexdigest()
-                if hsh in seen_tx:
-                    continue
-                seen_tx.add(hsh)
+                    # Dedupe by a hash of time+token+value
+                    key = hashlib.md5(f"{time_ago}{token_name}{value_usd}".encode()).hexdigest()
+                    if key in seen_tx:
+                        continue
+                    seen_tx.add(key)
 
-                transactions.append({
-                    "hash":      f"0x{hsh}",
-                    "type":      "Transaction",
-                    "amount":    name,
-                    "token":     name,
-                    "value_usd": value_usd,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "from":      wallet_address,
-                    "to":        "unknown",
-                    "time_ago":  time_txt
-                })
+                    transactions.append({
+                        "hash":      f"0x{key}",
+                        "type":      "Transaction",
+                        "amount":    token_name,
+                        "token":     token_name,
+                        "value_usd": value_usd,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "time_ago":  time_ago,
+                        "from":      wallet_address,
+                        "to":        "unknown"
+                    })
+
+            except Exception as e:
+                print(f"Error parsing transaction entry {i}: {e}")
+                continue
 
         return transactions, final_holdings
+
 
     except Exception as e:
         print("Scraping error:", e)
