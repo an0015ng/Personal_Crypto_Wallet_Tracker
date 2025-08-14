@@ -5,7 +5,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 import os
 from selenium import webdriver
@@ -188,45 +188,99 @@ def scrape_debank_wallet_real(wallet_address):
         if driver:
             driver.quit()
 
+from datetime import datetime, timedelta
+
 def send_email_notification(new_transactions, current_holdings):
-    """Send email notification with new transactions and top holdings."""
+    """
+    Send email notification with:
+      - Significant new transactions in last 24 hours (value > $10,000)
+      - Top 10 current holdings
+    """
     try:
-        significant_txs = [tx for tx in new_transactions if tx.get('value_usd', 0) > 10000]
+        # Parse timestamps and filter only last 24 hours
+        cutoff = datetime.now() - timedelta(days=1)
+        recent_significant = []
+        for tx in new_transactions:
+            # tx['timestamp'] is in "%Y-%m-%d %H:%M:%S" format
+            tx_time = datetime.strptime(tx['timestamp'], "%Y-%m-%d %H:%M:%S")
+            if tx['value_usd'] > 10000 and tx_time >= cutoff:
+                recent_significant.append(tx)
+
+        # Sort holdings descending by USD value and take top 10
         sorted_holdings = sorted(current_holdings, key=lambda h: h['value_usd'], reverse=True)
         top_holdings = sorted_holdings[:10]
 
+        # Build email
         msg = MIMEMultipart()
         msg['From'] = EMAIL_USER
-        msg['To'] = NOTIFY_EMAIL
-        msg['Subject'] = f"DeBank Update: {len(significant_txs)} New TXs + Top Holdings"
+        msg['To']   = NOTIFY_EMAIL
+        msg['Subject'] = f"DeBank Update: {len(recent_significant)} New TXs (24h) + Top Holdings"
 
+        # Total portfolio value
         total_value = sum(h['value_usd'] for h in current_holdings)
+
         html = f"""
-        <html><body><h2>DeBank Wallet Update for {WALLET_ADDRESS}</h2>
-        <h3>Total Portfolio Value: ${total_value:,.2f}</h3>
-        <h3>Significant New Transactions (>{'$10,000'})</h3>
+        <html><body style="font-family: Arial, sans-serif; line-height:1.4;">
+          <h2>📬 DeBank Wallet Update</h2>
+          <p><strong>Wallet:</strong> {WALLET_ADDRESS}</p>
+          <p><strong>Time:</strong> {datetime.now():%Y-%m-%d %H:%M:%S}</p>
+          
+          <h3>🚨 Significant New Transactions in Last 24 Hours (>${10_000:,})</h3>
         """
-        if significant_txs:
+
+        if recent_significant:
             html += "<ul>"
-            for tx in significant_txs:
-                html += f"<li><strong>{tx['type']}</strong>: {tx['amount']} {tx['token']} (${tx['value_usd']:,.2f})</li>"
+            for tx in recent_significant:
+                html += f"""
+                  <li>
+                    <strong>{tx['type']}</strong> —
+                    {tx['amount']} {tx['token']} 
+                    (<span style="color: green;">${tx['value_usd']:,.2f}</span>)<br>
+                    <small>Time: {tx['timestamp']} | Hash: {tx['hash']}</small>
+                  </li>
+                """
             html += "</ul>"
         else:
-            html += "<p>No new transactions over $10,000.</p>"
+            html += "<p>No new transactions over $10,000 in the last 24 hours.</p>"
 
-        html += "<h3>Top 10 Holdings</h3><table border='1' cellpadding='5' style='border-collapse:collapse;width:100%;'>"
-        html += "<tr style='background:#f0f0f0;'><th>Rank</th><th>Token</th><th>Amount</th><th>Value (USD)</th><th>%</th></tr>"
-        total_value_for_pct = total_value or 1
+        html += f"<h2>Total Portfolio Value: ${total_value:,.2f}</h2>"
+
+        # Top 10 holdings table
+        html += """
+          <h3>💰 Top 10 Current Holdings</h3>
+          <table border="1" cellpadding="5" cellspacing="0"
+                 style="border-collapse:collapse; width:100%; max-width:600px;">
+            <tr style="background:#f0f0f0;">
+              <th>Rank</th><th>Token</th><th align="right">Amount</th>
+              <th align="right">Value (USD)</th><th align="right">%</th>
+            </tr>
+        """
+        total_for_pct = total_value or 1
         for idx, h in enumerate(top_holdings, 1):
-            pct = (h['value_usd'] / total_value_for_pct) * 100
-            html += f"<tr><td>{idx}</td><td>{h['token']}</td><td align='right'>{h['amount']:,}</td><td align='right'>${h['value_usd']:,.2f}</td><td align='right'>{pct:.2f}%</td></tr>"
-        html += "</table></body></html>"
+            pct = h['value_usd'] / total_for_pct * 100
+            html += f"""
+            <tr>
+              <td>{idx}</td>
+              <td>{h['token']}</td>
+              <td align="right">{h['amount']:,}</td>
+              <td align="right">${h['value_usd']:,.2f}</td>
+              <td align="right">{pct:.2f}%</td>
+            </tr>
+            """
+        html += """
+          </table>
+          <p style="font-size:0.9em; color:#555;">
+            (Automated notification from your DeBank tracker.)
+          </p>
+        </body></html>
+        """
 
         msg.attach(MIMEText(html, 'html'))
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
             server.send_message(msg)
+
         print("✅ Email sent successfully.")
     except Exception as e:
         print(f"❌ Error sending email: {e}")
