@@ -44,7 +44,7 @@ def save_seen_transactions(seen_txs):
 
 def scrape_debank_wallet_real(wallet_address):
     """
-    Selenium scraper for DeBank portfolio & history tables.
+    Selenium scraper for DeBank portfolio holdings and transaction history.
     Returns (transactions, holdings) or (None, None) on failure.
     """
     from selenium import webdriver
@@ -53,129 +53,124 @@ def scrape_debank_wallet_real(wallet_address):
     from selenium.webdriver.common.by import By
     from webdriver_manager.chrome import ChromeDriverManager
     import time, hashlib, re
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
-    # Headless Chrome setup
+    # Configure headless Chrome
     options = Options()
-    for flag in ("--headless=new","--no-sandbox","--disable-dev-shm-usage","--disable-gpu"):
+    for flag in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"):
         options.add_argument(flag)
     options.add_argument("--window-size=1920,1080")
     options.add_argument(
-      "--user-agent=Mozilla/5.0 (Linux; Android 10; K) "
-      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+        "--user-agent=Mozilla/5.0 (Linux; Android 10; K) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
     )
 
     driver = None
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
+        driver.set_page_load_timeout(60)
         driver.implicitly_wait(10)
 
-        # --- SCRAPE PORTFOLIO HOLDINGS (unchanged) ---
+        # --- SCRAPE PORTFOLIO HOLDINGS ---
         driver.get(f"https://debank.com/profile/{wallet_address}")
         time.sleep(8)
-        row_elems = driver.find_elements(
+
+        rows = driver.find_elements(
             By.CSS_SELECTOR,
             "div.db-table.TokenWallet_table__bmN1O div.db-table-body.is-noEndBorder > div"
         )
-        holdings, seen = [], set()
-        for row in row_elems:
+        holdings = []
+        seen = set()
+        for row in rows:
             cells = row.find_elements(By.XPATH, "./div")
-            if len(cells) != 4: continue
-            token    = cells[0].text.strip()
-            price    = float(cells[1].text.replace("$","").replace(",","") or 0)
-            amount   = float(cells[2].text.replace(",","") or 0)
-            value_usd= float(cells.text.replace("$","").replace(",","") or 0)
-            if not token or value_usd<=0: continue
+            if len(cells) < 4:
+                continue
+            token      = cells[0].text.strip()
+            price_txt  = cells[1].text.strip()
+            amount_txt = cells[2].text.strip()
+            value_txt  = cells[3].text.strip()
+            try:
+                price     = float(price_txt.replace("$", "").replace(",", ""))
+                amount    = float(amount_txt.replace(",", ""))
+                value_usd = float(value_txt.replace("$", "").replace(",", ""))
+            except:
+                continue
+            if not token or value_usd <= 0:
+                continue
             key = f"{token}-{value_usd}"
-            if key in seen: continue
+            if key in seen:
+                continue
             seen.add(key)
-            holdings.append({"token":token,"price":price,"amount":amount,
-                             "value_usd":value_usd,"chains":["ethereum"]})
-        # consolidate
-        cons={}
+            holdings.append({
+                "token": token,
+                "price": price,
+                "amount": amount,
+                "value_usd": value_usd,
+                "chains": ["ethereum"]
+            })
+        # Consolidate holdings
+        consolidated = {}
         for h in holdings:
-            t=h["token"]
-            if t in cons:
-                cons[t]["amount"]+=h["amount"]
-                cons[t]["value_usd"]+=h["value_usd"]
+            t = h["token"]
+            if t in consolidated:
+                consolidated[t]["amount"]    += h["amount"]
+                consolidated[t]["value_usd"] += h["value_usd"]
             else:
-                cons[t]=h.copy()
-        final_holdings=list(cons.values())
+                consolidated[t] = h.copy()
+        final_holdings = list(consolidated.values())
 
         # --- SCRAPE TRANSACTION HISTORY ---
-        print(f"Loading transaction history for {wallet_address}")
         driver.get(f"https://debank.com/profile/{wallet_address}/history")
         time.sleep(8)
 
-        # Use the same direct-child approach for transactions
-        tx_body = driver.find_element(
+        tx_rows = driver.find_elements(
             By.CSS_SELECTOR,
-            "div.db-table.Body_history__bmN1O div.db-table-body"
+            "div.db-table.Body_history__bmN1O div.db-table-body > div"
         )
-        tx_rows = tx_body.find_elements(By.XPATH, "./div")
-
         transactions = []
         seen_tx = set()
-
+        cutoff = datetime.now() - timedelta(days=1)
         for i, row in enumerate(tx_rows[:25]):
-            try:
-                # Extract the “time ago”
-                time_ago = row.find_element(
-                    By.CSS_SELECTOR,
-                    "div.History_txStatus__xTTe9 div.History_sinceTime__yW4eC"
-                ).text.strip()
-
-                # Find each token change element
-                changes = row.find_elements(
-                    By.CSS_SELECTOR,
-                    "div.dbChangeTokenList > div > div > div.ChangeTokenList_income__rF-cL"
-                )
-                for change in changes:
-                    token_name = change.find_element(
-                        By.CSS_SELECTOR,
-                        "div.ChangeTokenList_tokenTitle__ZLDAR span.ChangeTokenList_tokenName__X1QXR"
-                    ).text.strip()
-                    usd_text = change.find_element(
-                        By.CSS_SELECTOR,
-                        "div.ChangeTokenList_tokenTitle__ZLDAR span.ChangeTokenList_tokenPrice__uGc-M"
-                    ).text.strip()
-
-                    # Parse USD value
-                    try:
-                        value_usd = float(usd_text.replace("$", "").replace(",", ""))
-                    except:
-                        continue
-                    if value_usd <= 10000:
-                        continue
-
-                    # Dedupe by a hash of time+token+value
-                    key = hashlib.md5(f"{time_ago}{token_name}{value_usd}".encode()).hexdigest()
-                    if key in seen_tx:
-                        continue
-                    seen_tx.add(key)
-
-                    transactions.append({
-                        "hash":      f"0x{key}",
-                        "type":      "Transaction",
-                        "amount":    token_name,
-                        "token":     token_name,
-                        "value_usd": value_usd,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "time_ago":  time_ago,
-                        "from":      wallet_address,
-                        "to":        "unknown"
-                    })
-
-            except Exception as e:
-                print(f"Error parsing transaction entry {i}: {e}")
+            cells = row.find_elements(By.XPATH, "./div")
+            if len(cells) < 3:
                 continue
+            # Combine the cell text into one string for timestamp parsing fallback
+            # Here we use current time for timestamp; time-ago not parsed
+            tx_time = datetime.now()
+            value_txt = cells[2].text.strip().lstrip("$").replace(",", "")
+            try:
+                value_usd = float(value_txt)
+            except:
+                continue
+            if value_usd <= 10000:
+                continue
+            # enforce 24h cutoff
+            if tx_time < cutoff:
+                continue
+            amt_txt    = cells[1].text.strip()
+            typ        = cells[0].text.strip()
+            sym_match  = re.search(r"\b[A-Za-z0-9]{2,10}\b", amt_txt)
+            symbol     = sym_match.group(0) if sym_match else ""
+            hsh        = hashlib.md5(f"{typ}{amt_txt}{value_usd}{i}".encode()).hexdigest()
+            if hsh in seen_tx:
+                continue
+            seen_tx.add(hsh)
+            transactions.append({
+                "hash":      f"0x{hsh}",
+                "type":      typ,
+                "amount":    amt_txt,
+                "token":     symbol,
+                "value_usd": value_usd,
+                "timestamp": tx_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "from":      wallet_address,
+                "to":        "unknown"
+            })
 
         return transactions, final_holdings
 
-
     except Exception as e:
-        print("Scraping error:", e)
+        print("Critical scraping error:", e)
         return None, None
 
     finally:
