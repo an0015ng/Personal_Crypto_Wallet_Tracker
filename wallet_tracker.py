@@ -55,140 +55,118 @@ def scrape_debank_wallet_real(wallet_address):
     import time, hashlib, re
     from datetime import datetime
 
-    # Configure headless Chrome
+    # Headless Chrome setup
     options = Options()
-    for arg in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"):
-        options.add_argument(arg)
+    for flag in ("--headless=new","--no-sandbox","--disable-dev-shm-usage","--disable-gpu"):
+        options.add_argument(flag)
     options.add_argument("--window-size=1920,1080")
     options.add_argument(
-        "--user-agent=Mozilla/5.0 (Linux; Android 10; K) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/114.0.0.0 Mobile Safari/537.36"
+      "--user-agent=Mozilla/5.0 (Linux; Android 10; K) "
+      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
     )
 
     driver = None
     try:
-        # Launch ChromeDriver
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(60)
         driver.implicitly_wait(10)
 
-        # --- SCRAPE PORTFOLIO HOLDINGS ---
+        # --- SCRAPE PORTFOLIO HOLDINGS (unchanged) ---
         driver.get(f"https://debank.com/profile/{wallet_address}")
         time.sleep(8)
-
         row_elems = driver.find_elements(
             By.CSS_SELECTOR,
             "div.db-table.TokenWallet_table__bmN1O div.db-table-body.is-noEndBorder > div"
         )
-
-        holdings = []
-        seen = set()
-
+        holdings, seen = [], set()
         for row in row_elems:
-            # Each row.text is multiline: [TOKEN, PRICE, AMOUNT, USD_VALUE]
-            lines = [line.strip() for line in row.text.splitlines() if line.strip()]
-            if len(lines) != 4:
-                continue
-
-            token, price_txt, amt_txt, val_txt = lines
-
-            try:
-                price = float(price_txt.replace("$", "").replace(",", ""))
-                amount = float(amt_txt.replace(",", ""))
-                value_usd = float(val_txt.replace("$", "").replace(",", ""))
-            except:
-                continue
-
-            if value_usd <= 0:
-                continue
-
+            cells = row.find_elements(By.XPATH, "./div")
+            if len(cells) != 4: continue
+            token    = cells[0].text.strip()
+            price    = float(cells[1].text.replace("$","").replace(",","") or 0)
+            amount   = float(cells[2].text.replace(",","") or 0)
+            value_usd= float(cells.text.replace("$","").replace(",","") or 0)
+            if not token or value_usd<=0: continue
             key = f"{token}-{value_usd}"
-            if key in seen:
-                continue
+            if key in seen: continue
             seen.add(key)
-
-            holdings.append({
-                "token":     token,
-                "price":     price,
-                "amount":    amount,
-                "value_usd": value_usd,
-                "chains":   ["ethereum"]
-            })
-
-        # Consolidate by token
-        consolidated = {}
+            holdings.append({"token":token,"price":price,"amount":amount,
+                             "value_usd":value_usd,"chains":["ethereum"]})
+        # consolidate
+        cons={}
         for h in holdings:
-            t = h["token"]
-            if t in consolidated:
-                consolidated[t]["amount"]    += h["amount"]
-                consolidated[t]["value_usd"] += h["value_usd"]
+            t=h["token"]
+            if t in cons:
+                cons[t]["amount"]+=h["amount"]
+                cons[t]["value_usd"]+=h["value_usd"]
             else:
-                consolidated[t] = h.copy()
-        final_holdings = list(consolidated.values())
+                cons[t]=h.copy()
+        final_holdings=list(cons.values())
 
-        # --- SCRAPE TRANSACTION HISTORY ---
+        # --- SCRAPE TRANSACTIONS with exact selectors ---
         driver.get(f"https://debank.com/profile/{wallet_address}/history")
         time.sleep(8)
+        tx_entries = driver.find_elements(
+            By.CSS_SELECTOR,
+            "div.History_table__uvlpK > div"  # direct children of the history table
+        )
+        transactions, seen_tx = [], set()
+        for entry in tx_entries[:25]:
+            # time ago
+            time_txt = entry.find_element(
+                By.CSS_SELECTOR,
+                "div.History_txStatus__xTTe9 div.History_sinceTime__yW4eC"
+            ).text.strip()
 
-        tx_elems = driver.find_elements(By.CSS_SELECTOR, "div.db-table-body > div")
-        transactions = []
-        seen_tx = set()
+            # each token change block
+            for change in entry.find_elements(
+                By.CSS_SELECTOR,
+                "div.dbChangeTokenList > div > div > div.ChangeTokenList_tokenWithAmount__hUd7a.ChangeTokenList_income__rF-cL.ChangeTokenList_clickable__yJC\\+x"
+            ):
+                name = change.find_element(
+                    By.CSS_SELECTOR,
+                    "div.ChangeTokenList_tokenTitle__ZLDAR span.ChangeTokenList_tokenName__X1QXR"
+                ).text.strip()
+                usd = change.find_element(
+                    By.CSS_SELECTOR,
+                    "div.ChangeTokenList_tokenTitle__ZLDAR span.ChangeTokenList_tokenPrice__uGc-M"
+                ).text.strip()  # like "$600,000.00"
 
-        for i, row in enumerate(tx_elems[:25]):
-            text = row.text.strip()
-            if not text:
-                continue
+                try:
+                    value_usd = float(usd.replace("$","").replace(",",""))
+                except:
+                    continue
+                if value_usd <= 10000:
+                    continue
 
-            hsh = hashlib.md5(f"{text}{i}".encode()).hexdigest()
-            if hsh in seen_tx:
-                continue
-            seen_tx.add(hsh)
+                # dedupe by hash of time+name+value
+                hsh = hashlib.md5(f"{time_txt}{name}{value_usd}".encode()).hexdigest()
+                if hsh in seen_tx:
+                    continue
+                seen_tx.add(hsh)
 
-            cells = [c.text.strip() for c in row.find_elements(By.CSS_SELECTOR, "div") if c.text.strip()]
-            if len(cells) < 3:
-                continue
-
-            tx_type = cells[0]
-            amount_txt = cells[1]
-            token_match = re.search(r"\b[A-Z0-9]{2,10}\b", amount_txt)
-            symbol = token_match.group(0) if token_match else ""
-
-            # find first $ value in cells
-            value_usd = 0.0
-            for c in cells:
-                if c.startswith("$"):
-                    try:
-                        value_usd = float(c.replace("$", "").replace(",", ""))
-                        break
-                    except:
-                        continue
-
-            if value_usd <= 0:
-                continue
-
-            transactions.append({
-                "hash":      f"0x{hsh}",
-                "type":      tx_type,
-                "amount":    amount_txt,
-                "token":     symbol,
-                "value_usd": value_usd,
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "from":      wallet_address,
-                "to":        "unknown"
-            })
+                transactions.append({
+                    "hash":      f"0x{hsh}",
+                    "type":      "Transaction",
+                    "amount":    name,
+                    "token":     name,
+                    "value_usd": value_usd,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "from":      wallet_address,
+                    "to":        "unknown",
+                    "time_ago":  time_txt
+                })
 
         return transactions, final_holdings
 
-    except Exception:
+    except Exception as e:
+        print("Scraping error:", e)
         return None, None
 
     finally:
         if driver:
             driver.quit()
 
-from datetime import datetime, timedelta
 
 def send_email_notification(new_transactions, current_holdings):
     """
