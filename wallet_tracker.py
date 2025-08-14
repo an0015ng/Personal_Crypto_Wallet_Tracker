@@ -55,12 +55,10 @@ def scrape_debank_wallet_real(wallet_address):
     import time, hashlib, re
     from datetime import datetime
 
-    # Chrome headless options
+    # Configure headless Chrome
     options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
+    for arg in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"):
+        options.add_argument(arg)
     options.add_argument("--window-size=1920,1080")
     options.add_argument(
         "--user-agent=Mozilla/5.0 (Linux; Android 10; K) "
@@ -70,83 +68,56 @@ def scrape_debank_wallet_real(wallet_address):
 
     driver = None
     try:
-        # Initialize ChromeDriver via webdriver_manager
+        # Launch ChromeDriver
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(60)
         driver.implicitly_wait(10)
 
         # --- SCRAPE PORTFOLIO HOLDINGS ---
-        print(f"Loading portfolio page for {wallet_address}")
         driver.get(f"https://debank.com/profile/{wallet_address}")
         time.sleep(8)
 
-        rows = driver.find_elements(
+        row_elems = driver.find_elements(
             By.CSS_SELECTOR,
             "div.db-table.TokenWallet_table__bmN1O div.db-table-body.is-noEndBorder > div"
         )
-        print(f"Found {len(rows)} holding rows")
 
         holdings = []
         seen = set()
 
-        for i, row in enumerate(rows):
-            try:
-                # Get only direct child divs (exactly 4 columns)
-                cells = row.find_elements(By.XPATH, "./div")
-                print(f"DEBUG row {i} direct cells:", [c.text for c in cells])
-
-                if len(cells) < 4:
-                    continue
-
-                # Token symbol in first cell
-                token = cells[0].text.strip()
-                if not token:
-                    continue
-
-                # Price in 2nd cell
-                price_text = cells[1].text.strip()
-                try:
-                    price = float(price_text.replace("$", "").replace(",", ""))
-                except:
-                    price = 0.0
-
-                # Amount in 3rd cell
-                amount_text = cells[2].text.strip()
-                try:
-                    amount = float(amount_text.replace(",", ""))
-                except:
-                    amount = 0.0
-
-                # USD value in 4th cell
-                value_text = cells[3].text.strip()
-                try:
-                    value_usd = float(value_text.replace("$", "").replace(",", ""))
-                except:
-                    value_usd = price * amount if price and amount else 0.0
-
-                if value_usd <= 0:
-                    continue
-
-                key = f"{token}-{value_usd}"
-                if key in seen:
-                    continue
-                seen.add(key)
-
-                holdings.append({
-                    "token": token,
-                    "price": price,
-                    "amount": amount,
-                    "value_usd": value_usd,
-                    "chains": ["ethereum"]
-                })
-                print(f"Added holding: {token} = ${value_usd:,.2f}")
-
-            except Exception as e:
-                print(f"Error parsing holding row {i}: {e}")
+        for row in row_elems:
+            # Each row.text is multiline: [TOKEN, PRICE, AMOUNT, USD_VALUE]
+            lines = [line.strip() for line in row.text.splitlines() if line.strip()]
+            if len(lines) != 4:
                 continue
 
-        # Consolidate multi-chain holdings
+            token, price_txt, amt_txt, val_txt = lines
+
+            try:
+                price = float(price_txt.replace("$", "").replace(",", ""))
+                amount = float(amt_txt.replace(",", ""))
+                value_usd = float(val_txt.replace("$", "").replace(",", ""))
+            except:
+                continue
+
+            if value_usd <= 0:
+                continue
+
+            key = f"{token}-{value_usd}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            holdings.append({
+                "token":     token,
+                "price":     price,
+                "amount":    amount,
+                "value_usd": value_usd,
+                "chains":   ["ethereum"]
+            })
+
+        # Consolidate by token
         consolidated = {}
         for h in holdings:
             t = h["token"]
@@ -158,88 +129,64 @@ def scrape_debank_wallet_real(wallet_address):
         final_holdings = list(consolidated.values())
 
         # --- SCRAPE TRANSACTION HISTORY ---
-        print(f"Loading transaction history for {wallet_address}")
         driver.get(f"https://debank.com/profile/{wallet_address}/history")
         time.sleep(8)
 
-        tx_selectors = [
-            "div.db-table-body > div",
-            "[class*='history'] [class*='body'] > div",
-            "[class*='transaction'] div[class*='row']",
-            "div[class*='list'] > div[class*='item']"
-        ]
-
-        tx_rows = []
-        for sel in tx_selectors:
-            try:
-                tx_rows = driver.find_elements(By.CSS_SELECTOR, sel)
-                if tx_rows:
-                    print(f"Found {len(tx_rows)} transaction rows with selector: {sel}")
-                    break
-            except Exception as e:
-                print(f"Transaction selector {sel} failed: {e}")
-                continue
-
+        tx_elems = driver.find_elements(By.CSS_SELECTOR, "div.db-table-body > div")
         transactions = []
-        for i, row in enumerate(tx_rows[:25]):
-            try:
-                text = row.text.strip()
-                if not text:
-                    continue
+        seen_tx = set()
 
-                hsh = hashlib.md5(f"{text}{i}".encode()).hexdigest()
-                cells = row.find_elements(By.CSS_SELECTOR, "div")
-                if len(cells) < 3:
-                    continue
-
-                tx_type     = cells[0].text.strip()
-                amount_text = cells[1].text.strip()
-                token_match = re.search(r"\b[A-Z0-9]{2,10}\b", amount_text)
-                symbol      = token_match.group(0) if token_match else ""
-
-                value_usd = 0.0
-                for cell in cells:
-                    ct = cell.text.strip()
-                    if "$" in ct:
-                        try:
-                            value_usd = float(ct.replace("$", "").replace(",", ""))
-                            break
-                        except:
-                            continue
-
-                if value_usd <= 0:
-                    continue
-
-                transactions.append({
-                    "hash":      f"0x{hsh}",
-                    "type":      tx_type,
-                    "amount":    amount_text,
-                    "token":     symbol,
-                    "value_usd": value_usd,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "from":      wallet_address,
-                    "to":        "unknown"
-                })
-                print(f"Added transaction: {tx_type} = ${value_usd:,.2f}")
-
-            except Exception as e:
-                print(f"Error parsing transaction row {i}: {e}")
+        for i, row in enumerate(tx_elems[:25]):
+            text = row.text.strip()
+            if not text:
                 continue
 
-        print(f"Scraped {len(final_holdings)} holdings and {len(transactions)} transactions")
+            hsh = hashlib.md5(f"{text}{i}".encode()).hexdigest()
+            if hsh in seen_tx:
+                continue
+            seen_tx.add(hsh)
+
+            cells = [c.text.strip() for c in row.find_elements(By.CSS_SELECTOR, "div") if c.text.strip()]
+            if len(cells) < 3:
+                continue
+
+            tx_type = cells[0]
+            amount_txt = cells[1]
+            token_match = re.search(r"\b[A-Z0-9]{2,10}\b", amount_txt)
+            symbol = token_match.group(0) if token_match else ""
+
+            # find first $ value in cells
+            value_usd = 0.0
+            for c in cells:
+                if c.startswith("$"):
+                    try:
+                        value_usd = float(c.replace("$", "").replace(",", ""))
+                        break
+                    except:
+                        continue
+
+            if value_usd <= 0:
+                continue
+
+            transactions.append({
+                "hash":      f"0x{hsh}",
+                "type":      tx_type,
+                "amount":    amount_txt,
+                "token":     symbol,
+                "value_usd": value_usd,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "from":      wallet_address,
+                "to":        "unknown"
+            })
+
         return transactions, final_holdings
 
-    except Exception as e:
-        print(f"Critical error in scraping: {e}")
+    except Exception:
         return None, None
 
     finally:
         if driver:
-            try:
-                driver.quit()
-            except:
-                pass
-
+            driver.quit()
 
 def send_email_notification(new_transactions, current_holdings):
     """Send email notification with new transactions and top holdings."""
