@@ -81,64 +81,45 @@ def scrape_debank_wallet_real(wallet_address):
         driver.get(f"https://debank.com/profile/{wallet_address}")
         time.sleep(8)
 
-        # Try multiple selectors for holdings rows
-        holdings_selectors = [
-            "div.db-table.TokenWallet_table__bmN1O div.db-table-body.is-noEndBorder > div",
-            "[class*='TokenWallet_table'] [class*='db-table-body'] > div",
-            "[class*='table'] [class*='body'] > div[class*='row']",
-            "div[class*='portfolio'] div[class*='row']"
-        ]
-
-        rows = []
-        for sel in holdings_selectors:
-            try:
-                rows = driver.find_elements(By.CSS_SELECTOR, sel)
-                if rows:
-                    print(f"Found {len(rows)} holding rows with selector: {sel}")
-                    break
-            except Exception as e:
-                print(f"Selector {sel} failed: {e}")
-                continue
+        rows = driver.find_elements(
+            By.CSS_SELECTOR,
+            "div.db-table.TokenWallet_table__bmN1O div.db-table-body.is-noEndBorder > div"
+        )
+        print(f"Found {len(rows)} holding rows")
 
         holdings = []
         seen = set()
 
         for i, row in enumerate(rows):
             try:
-                # Extract token symbol
-                token = None
-                for tok_sel in ["div > div:nth-child(1) a", "[class*='token'] a", "a[href*='/token/']"]:
-                    try:
-                        elem = row.find_element(By.CSS_SELECTOR, tok_sel)
-                        token = elem.text.strip()
-                        if token:
-                            break
-                    except:
-                        continue
-                if not token:
-                    continue
-
-                # Parse cells with correct indices
-                cells = row.find_elements(By.CSS_SELECTOR, "div")
-                print(f"DEBUG row {i} cells:", [c.text for c in cells])  # debug
+                # Get only direct child divs (exactly 4 columns)
+                cells = row.find_elements(By.XPATH, "./div")
+                print(f"DEBUG row {i} direct cells:", [c.text for c in cells])
 
                 if len(cells) < 4:
                     continue
 
-                price_text  = cells[1].text.strip()
-                amount_text = cells[2].text.strip()
-                value_text  = cells[3].text.strip()
+                # Token symbol in first cell
+                token = cells[0].text.strip()
+                if not token:
+                    continue
 
+                # Price in 2nd cell
+                price_text = cells[1].text.strip()
                 try:
                     price = float(price_text.replace("$", "").replace(",", ""))
                 except:
                     price = 0.0
 
+                # Amount in 3rd cell
+                amount_text = cells[2].text.strip()
                 try:
                     amount = float(amount_text.replace(",", ""))
                 except:
                     amount = 0.0
 
+                # USD value in 4th cell
+                value_text = cells[3].text.strip()
                 try:
                     value_usd = float(value_text.replace("$", "").replace(",", ""))
                 except:
@@ -258,6 +239,7 @@ def scrape_debank_wallet_real(wallet_address):
                 driver.quit()
             except:
                 pass
+
 
 def send_email_notification(new_transactions, current_holdings):
     """Send email notification with new transactions and top holdings."""
