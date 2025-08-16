@@ -229,7 +229,7 @@ def send_email_notification(new_transactions, current_holdings):
 
         # Top 10 holdings table
         html += """
-          <h3>💰 Top 10 Current Holdings</h3>
+        <h3>💰 Top 10 Current Holdings</h3>
           <table border="1" cellpadding="5" cellspacing="0"
                  style="border-collapse:collapse; width:100%; max-width:600px;">
             <tr style="background:#f0f0f0;">
