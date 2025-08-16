@@ -203,30 +203,28 @@ def send_email_notification(new_transactions, current_holdings):
             tx_time = datetime.strptime(tx['timestamp'], "%Y-%m-%d %H:%M:%S")
             if tx['value_usd'] > 10000 and tx_time >= cutoff:
                 recent_significant.append(tx)
-
+        
         # Sort holdings descending by USD value and take top 10
         sorted_holdings = sorted(current_holdings, key=lambda h: h['value_usd'], reverse=True)
         top_holdings = sorted_holdings[:10]
-
+        
         # Build email
         msg = MIMEMultipart()
         msg['From'] = EMAIL_USER
         msg['To']   = NOTIFY_EMAIL
         msg['Subject'] = f"DeBank Update: {len(recent_significant)} New TXs (24h) + Top Holdings"
-
+        
         # Total portfolio value
         total_value = sum(h['value_usd'] for h in current_holdings)
-
+        
         html = f"""
         <html><body style="font-family: Arial, sans-serif; line-height:1.4;">
           <h2>📬 DeBank Wallet Update</h2>
           <p><strong>Wallet:</strong> {WALLET_ADDRESS}</p>
-          <p><strong>Time:</strong> {datetime.now():%Y-%m-%d %H:%M:%S}</p>
+          <p><strong>Time:</strong> {datetime.now():%Y-%m-%d %H:%M:%S}</p>"""
           
-
-
         html += f"<h2>Total Portfolio Value: ${total_value:,.2f}</h2>"
-
+        
         # Top 10 holdings table
         html += """
         <h3>Top 10 Current Holdings</h3>
@@ -237,6 +235,7 @@ def send_email_notification(new_transactions, current_holdings):
               <th align="right">Value (USD)</th><th align="right">%</th>
             </tr>
         """
+        
         total_for_pct = total_value or 1
         for idx, h in enumerate(top_holdings, 1):
             pct = h['value_usd'] / total_for_pct * 100
@@ -249,11 +248,12 @@ def send_email_notification(new_transactions, current_holdings):
               <td align="right">{pct:.2f}%</td>
             </tr>
             """
+        
         html += """
           </table>
-        <h3>🚨 Significant New Transactions in Last 24 Hours (>${10_000:,})</h3>
+        <h3>🚨 Significant New Transactions in Last 24 Hours (>$10,000)</h3>
         """
-
+        
         if recent_significant:
             html += "<ul>"
             for tx in recent_significant:
@@ -268,21 +268,24 @@ def send_email_notification(new_transactions, current_holdings):
             html += "</ul>"
         else:
             html += "<p>No new transactions over $10,000 in the last 24 hours.</p>"
+        
+        html += """
           <p style="font-size:0.9em; color:#555;">
             (Automated notification from your DeBank tracker.)
           </p>
         </body></html>
         """
-
+        
         msg.attach(MIMEText(html, 'html'))
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
             server.send_message(msg)
-
+        
         print("✅ Email sent successfully.")
     except Exception as e:
         print(f"❌ Error sending email: {e}")
+
 
 def track_wallet():
     """Main function to track wallet and send notifications."""
