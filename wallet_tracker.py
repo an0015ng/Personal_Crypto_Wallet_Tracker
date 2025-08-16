@@ -223,23 +223,7 @@ def send_email_notification(new_transactions, current_holdings):
           <p><strong>Wallet:</strong> {WALLET_ADDRESS}</p>
           <p><strong>Time:</strong> {datetime.now():%Y-%m-%d %H:%M:%S}</p>
           
-          <h3>🚨 Significant New Transactions in Last 24 Hours (>${10_000:,})</h3>
-        """
 
-        if recent_significant:
-            html += "<ul>"
-            for tx in recent_significant:
-                html += f"""
-                  <li>
-                    <strong>{tx['type']}</strong> —
-                    {tx['amount']} {tx['token']} 
-                    (<span style="color: green;">${tx['value_usd']:,.2f}</span>)<br>
-                    <small>Time: {tx['timestamp']} | Hash: {tx['hash']}</small>
-                  </li>
-                """
-            html += "</ul>"
-        else:
-            html += "<p>No new transactions over $10,000 in the last 24 hours.</p>"
 
         html += f"<h2>Total Portfolio Value: ${total_value:,.2f}</h2>"
 
@@ -267,6 +251,23 @@ def send_email_notification(new_transactions, current_holdings):
             """
         html += """
           </table>
+        <h3>🚨 Significant New Transactions in Last 24 Hours (>${10_000:,})</h3>
+        """
+
+        if recent_significant:
+            html += "<ul>"
+            for tx in recent_significant:
+                html += f"""
+                  <li>
+                    <strong>{tx['type']}</strong> —
+                    {tx['amount']} {tx['token']} 
+                    (<span style="color: green;">${tx['value_usd']:,.2f}</span>)<br>
+                    <small>Time: {tx['timestamp']} | Hash: {tx['hash']}</small>
+                  </li>
+                """
+            html += "</ul>"
+        else:
+            html += "<p>No new transactions over $10,000 in the last 24 hours.</p>"
           <p style="font-size:0.9em; color:#555;">
             (Automated notification from your DeBank tracker.)
           </p>
