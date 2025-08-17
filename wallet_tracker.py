@@ -151,9 +151,12 @@ def scrape_debank_wallet_real(wallet_address):
                 continue
 
             tx_type = cells[0]
+            print(f"[SCRAPE] tx_type: {tx_type}")
             amount_txt = cells[1]
+            print(f"[SCRAPE] amount_txt: {amount_txt}")
             token_match = re.search(r"\b[A-Z0-9]{2,10}\b", amount_txt)
             symbol = token_match.group(0) if token_match else ""
+            print(f"[SCRAPE] token: {symbol}")
 
             # find first $ value in cells
             value_usd = 0.0
@@ -167,7 +170,8 @@ def scrape_debank_wallet_real(wallet_address):
 
             if value_usd <= 0:
                 continue
-
+            print(f"[SCRAPE] value_usd: {value_usd}")
+            
             transactions.append({
                 "hash":      f"0x{hsh}",
                 "type":      tx_type,
